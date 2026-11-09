@@ -142,7 +142,7 @@ public class SignalProcessingServiceTest {
         signalRepository.saveAndFlush(record);
 
         Mockito.when(binanceClient.createTrade().getOrder(any()))
-                .thenThrow(new RuntimeException("-2013 Order does not exist."));
+                .thenThrow(new com.binance.connector.client.exceptions.BinanceClientException("Order does not exist", "Order does not exist", 400, -2013));
 
         String status = assertDoesNotThrow(() -> signalProcessingService.requeryOrderStatus(signalId));
 

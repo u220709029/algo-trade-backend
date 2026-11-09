@@ -3,7 +3,6 @@ package com.example.demo.service;
 import com.binance.connector.client.exceptions.BinanceClientException;
 import com.binance.connector.client.exceptions.BinanceConnectorException;
 import com.binance.connector.client.impl.SpotClientImpl;
-import com.example.demo.dto.SignalResponse;
 import com.example.demo.dto.TradingSignalRequest;
 import com.example.demo.entity.SignalRecord;
 import com.example.demo.repository.SignalRepository;
@@ -170,16 +169,14 @@ public class SignalProcessingService {
             log.info("✅ YENİDEN SORGULAMA BAŞARILI: '{}' ID'li emrin güncel durumu: {}", signalId, newStatus);
             return newStatus;
 
-        } catch (BinanceClientException e) {
-            log.warn("Sorgulama başarısız (-2013), emir henüz bulunamadı. Durum UNKNOWN olarak korunuyor.");
-            return "UNKNOWN";
-        } catch (Exception e) {
-            if (e.getMessage() != null && e.getMessage().contains("-2013")) {
+        } catch (com.binance.connector.client.exceptions.BinanceClientException e) {
+            if (e.getErrorCode() == -2013) {
                 log.warn("Sorgulama başarısız (-2013), emir henüz bulunamadı. Durum UNKNOWN olarak korunuyor.");
                 return "UNKNOWN";
             }
-            log.error("🚨 YENİDEN SORGULAMA HATASI ('{}'): {}", signalId, e.getMessage());
-            throw new RuntimeException("REQUERY_ERROR: Binance üzerinden durum sorgulanamadı: " + e.getMessage());
+            throw e;
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new RuntimeException("JSON_PARSE_ERROR: " + e.getMessage(), e);
         }
     }
 
