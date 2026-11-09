@@ -42,9 +42,23 @@ public class WebhookController {
             return ResponseEntity.ok("Sinyal başarıyla işlendi ve Binance emri gerçekleşti.");
 
         } catch (Exception e) {
-            // Service'den fırlatılan hatayı burada yakalayıp müşteriye (400 Bad Request) olarak dönüyoruz
-            log.error("İşlem başarısız oldu, müşteriye hata dönülüyor: {}", e.getMessage());
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("İşlem Başarısız: " + e.getMessage());
+            String errorMsg = e.getMessage();
+
+            // Eğer hata IDEMPOTENCY (Çift İstek) ise 409 Conflict dön
+            if (errorMsg != null && errorMsg.contains("IDEMPOTENCY_ERROR")) {
+                log.warn("Tekrarlanan istek reddedildi: {}", errorMsg);
+                return ResponseEntity.status(HttpStatus.CONFLICT).body(errorMsg);
+            }
+
+            // Eğer hata ZAMAN AŞIMI ise 504 Gateway Timeout dön
+            if (errorMsg != null && errorMsg.contains("TIMEOUT_UNKNOWN_STATE")) {
+                log.error("KRİTİK UYARI: İşlem durumu belirsiz! {}", errorMsg);
+                return ResponseEntity.status(HttpStatus.GATEWAY_TIMEOUT).body("Durum Belirsiz: " + errorMsg);
+            }
+
+            // Diğer normal Binance redleri için 400 Bad Request dön
+            log.error("İşlem başarısız oldu: {}", errorMsg);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("İşlem Başarısız: " + errorMsg);
         }
     }
 }

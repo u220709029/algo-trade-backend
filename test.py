@@ -1,10 +1,12 @@
 import requests
+import uuid
 
 veri = {
     "symbol": "BTCUSDT",
     "action": "BUY",
     "price": 65000.0,
-    "quantity": 0.05  E
+    "signalId": str(uuid.uuid4()),
+    "quantity": 0.05
 }
 
 ozel_basliklar = {

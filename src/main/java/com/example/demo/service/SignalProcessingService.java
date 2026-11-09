@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -37,39 +38,32 @@ public class SignalProcessingService {
      */
     public void processSignal(TradingSignalRequest signal) {
 
-        // SİNYALE BENZERSİZ BİR KİMLİK (İMZA) OLUŞTUR
-        String signalKey = signal.symbol() + "_" + signal.action();
-        long currentTime = System.currentTimeMillis();
-
-        // KALKAN KONTROLÜ: Bu sinyal son 10 saniye (10000 ms) içinde geldi mi?
-        if (processedSignals.containsKey(signalKey)) {
-            long lastProcessedTime = processedSignals.get(signalKey);
-            long timeDifference = currentTime - lastProcessedTime;
-
-            if (timeDifference < 10000) { // 10 saniye
-                log.warn("🚨 ÇİFT İŞLEM ENGELLENDİ! '{}' için henüz {} ms önce işlem yapıldı. Yankı (Tekrar) sinyali çöpe atılıyor.",
-                        signalKey, timeDifference);
-                // İşlemi durdur ve Controller'a hatayı fırlat
-                throw new RuntimeException("Çift işlem koruması: Bu sinyal son 10 saniye içinde zaten işlendi!");
-            }
+        // 1. EĞER TRADINGVIEW ID GÖNDERMEYİ UNUTURSA, BİZ RASTGELE ÜRETELİM
+        String signalId = signal.signalId();
+        if (signalId == null || signalId.isEmpty()) {
+            signalId = UUID.randomUUID().toString();
         }
 
-        // KALKANDAN GEÇERSE: Sinyalin işlenme saatini hafızaya kaydet
-        processedSignals.put(signalKey, currentTime);
+        long currentTime = System.currentTimeMillis();
 
-        log.info("Yeni TradingView Sinyali İşleniyor -> Parite: {}, Yön (Side): {}, Tetiklenme Fiyatı: {}",
-                signal.symbol(), signal.action(), signal.price());
+        // 2. ATOMİK KONTROL (RACE CONDITION ÇÖZÜMÜ)
+        // putIfAbsent: Eğer bu ID hafızada YOKSA ekler ve 'null' döner. VARSA eski değerini döner.
+        Long previousTime = processedSignals.putIfAbsent(signalId, currentTime);
 
-        sendMarketOrder(signal);
+        if (previousTime != null) {
+            log.warn("🚨 ÇİFT İŞLEM ENGELLENDİ! '{}' ID'li sinyal zaten işlendi.", signalId);
+            // Hata tipini belli etmek için özel bir mesaj fırlatıyoruz
+            throw new RuntimeException("IDEMPOTENCY_ERROR: Bu sinyal zaten işlendi!");
+        }
+
+        log.info("Yeni Sinyal İşleniyor -> Parite: {}, Yön: {}, Miktar: {}, ID: {}",
+                signal.symbol(), signal.action(), signal.quantity(), signalId);
+
+        // ID'yi Binance'e iletilmek üzere metoda gönderiyoruz
+        sendMarketOrder(signal, signalId);
     }
 
-    /**
-     * Binance Testnet Spot API'sine SPOT MARKET emri gönderir.
-     *
-     * @param signal Sinyal DTO'su
-     */
-    private void sendMarketOrder(TradingSignalRequest signal) {
-        // 2. DÜZELTME: İki tane olan sendMarketOrder metodu teke düşürüldü ve içeriği toparlandı.
+    private void sendMarketOrder(TradingSignalRequest signal, String signalId) {
         try {
             SpotClientImpl client = new SpotClientImpl(apiKey, secretKey, TESTNET_BASE_URL);
 
@@ -77,30 +71,24 @@ public class SignalProcessingService {
             parameters.put("symbol", signal.symbol());
             parameters.put("side", signal.action());
             parameters.put("type", "MARKET");
-
-            // SABİT 0.01 YERİNE ARTIK DIŞARIDAN GELEN MİKTARI KULLANIYORUZ
             parameters.put("quantity", signal.quantity());
 
-            log.info("Binance Testnet'e MARKET Emri Gönderiliyor... [Parite: {}, Yön: {}, Miktar: {}]",
-                    signal.symbol(), signal.action(), signal.quantity());
+            // 3. SCHRÖDİNGER ÇÖZÜMÜ: Binance'e kendi fiş numaramızı (ID) veriyoruz
+            parameters.put("newClientOrderId", signalId);
 
             String response = client.createTrade().newOrder(parameters);
-            log.info("Binance Emri Başarıyla Gerçekleşti! Dönen JSON Cevabı:\n{}", response);
+            log.info("Binance Emri Başarıyla Gerçekleşti! Dönen JSON:\n{}", response);
 
         } catch (BinanceClientException e) {
-            log.error("Binance İstemci Hatası (Client Exception) oluştu! HTTP Kodu: {}, Hata Mesajı: {}",
-                    e.getHttpStatusCode(), e.getMessage(), e);
-            throw new RuntimeException("Binance Emri Reddetti: " + e.getMessage());
+            // Binance kurallarına aykırı bir şey yaptık (Bakiye yok, limit altı vs.)
+            throw new RuntimeException("BINANCE_REJECTED: " + e.getMessage());
 
         } catch (BinanceConnectorException e) {
-            log.error("Binance Bağlantı Hatası (Connector Exception) oluştu! Hata Mesajı: {}",
-                    e.getMessage(), e);
-            throw new RuntimeException("Binance Bağlantı Hatası: " + e.getMessage());
+            // İNTERNET KOPTU! Binance emri aldı mı almadı mı bilmiyoruz!
+            throw new RuntimeException("TIMEOUT_UNKNOWN_STATE: İnternet koptu, emrin durumu belirsiz.");
 
         } catch (Exception e) {
-            log.error("Emir gönderimi sırasında beklenmeyen bir hata meydana geldi: {}",
-                    e.getMessage(), e);
-            throw new RuntimeException("Sistem Hatası: " + e.getMessage());
+            throw new RuntimeException("SYSTEM_ERROR: " + e.getMessage());
         }
     }
 }
