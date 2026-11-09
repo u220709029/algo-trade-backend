@@ -12,7 +12,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
@@ -34,7 +33,6 @@ public class SignalProcessingService {
     private final SignalRepository signalRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    @Transactional
     public void processSignal(TradingSignalRequest signal) {
         
         if (signal.signalId() == null) {
@@ -57,15 +55,20 @@ public class SignalProcessingService {
             throw new IllegalArgumentException("VALIDATION_ERROR: Miktar 0'dan büyük ve 10'dan küçük olmalıdır.");
         }
 
+        // --- 2. KALICI VERİTABANINDA ÇİFT İŞLEM KORUMASI (IDEMPOTENCY) ---
         String signalId = signal.signalId();
-        if (signalRepository.existsById(signalId)) {
-            log.warn("🚨 ÇİFT İŞLEM ENGELLENDİ! '{}' ID'li sinyal veritabanında zaten mevcut.", signalId);
+        
+        SignalRecord record = new SignalRecord(signalId, signal.symbol(), signal.action(), "UNKNOWN", System.currentTimeMillis());
+        try {
+            // saveAndFlush anında diske yazar. Eğer aynı ID ile eşzamanlı (concurrent) bir istek 
+            // gelirse, veritabanı Primary Key kısıtlamasından dolayı hata fırlatır.
+            signalRepository.saveAndFlush(record);
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            log.warn("🚨 EŞZAMANLI ÇİFT İŞLEM ENGELLENDİ (Race Condition)! '{}' ID'li sinyal veritabanına yazılırken çakışma yaşandı.", signalId);
             throw new RuntimeException("IDEMPOTENCY_ERROR: Bu sinyal zaten işlendi!");
         }
 
-        SignalRecord record = new SignalRecord(signalId, signal.symbol(), signal.action(), "UNKNOWN", System.currentTimeMillis());
-        signalRepository.save(record);
-
+        // --- 3. BORSAYA İLETİM ---
         sendMarketOrder(signal, signalId);
     }
 
