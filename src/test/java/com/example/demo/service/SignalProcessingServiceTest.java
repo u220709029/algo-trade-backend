@@ -3,6 +3,7 @@ package com.example.demo.service;
 import com.binance.connector.client.exceptions.BinanceConnectorException;
 import com.binance.connector.client.impl.SpotClientImpl;
 import com.example.demo.dto.TradingSignalRequest;
+import com.example.demo.entity.SignalRecord;
 import com.example.demo.repository.SignalRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -118,5 +119,34 @@ public class SignalProcessingServiceTest {
 
         // Binance'e toplamda SADECE 1 KERE gidildiğini fiziksel olarak doğrula
         Mockito.verify(binanceClient.createTrade(), Mockito.times(1)).newOrder(any());
+    }
+
+    @Test
+    public void testRequery_UnknownToFilled() {
+        String signalId = UUID.randomUUID().toString();
+        SignalRecord record = new SignalRecord(signalId, "BTCUSDT", "BUY", "UNKNOWN", System.currentTimeMillis());
+        signalRepository.saveAndFlush(record);
+
+        Mockito.when(binanceClient.createTrade().getOrder(any())).thenReturn("{\"status\":\"FILLED\"}");
+
+        String status = signalProcessingService.requeryOrderStatus(signalId);
+
+        assertEquals("FILLED", status, "Dönen durum FILLED olmalı");
+        assertEquals("FILLED", signalRepository.findById(signalId).get().getOrderStatus(), "Veritabanındaki kayıt FILLED olarak güncellenmeli");
+    }
+
+    @Test
+    public void testRequery_OrderNotFound_ReturnsUnknown() {
+        String signalId = UUID.randomUUID().toString();
+        SignalRecord record = new SignalRecord(signalId, "BTCUSDT", "BUY", "UNKNOWN", System.currentTimeMillis());
+        signalRepository.saveAndFlush(record);
+
+        Mockito.when(binanceClient.createTrade().getOrder(any()))
+                .thenThrow(new RuntimeException("-2013 Order does not exist."));
+
+        String status = assertDoesNotThrow(() -> signalProcessingService.requeryOrderStatus(signalId));
+
+        assertEquals("UNKNOWN", status, "Metot Exception fırlatmadan UNKNOWN dönmeli");
+        assertEquals("UNKNOWN", signalRepository.findById(signalId).get().getOrderStatus(), "Veritabanındaki kayıt UNKNOWN olarak kalmalı");
     }
 }

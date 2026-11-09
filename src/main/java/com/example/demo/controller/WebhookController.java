@@ -96,11 +96,20 @@ public class WebhookController {
         }
 
         try {
-            SignalResponse response = signalProcessingService.requeryOrderStatus(signalId);
-            if ("UNKNOWN".equalsIgnoreCase(response.status())) {
-                return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
+            String status = signalProcessingService.requeryOrderStatus(signalId);
+            if ("UNKNOWN".equalsIgnoreCase(status)) {
+                return ResponseEntity.ok(new SignalResponse(signalId, "UNKNOWN", "Emir durumu henüz netleşmedi, borsada bulunamadı"));
             }
-            return ResponseEntity.ok(response);
+            if ("FILLED".equalsIgnoreCase(status)) {
+                return ResponseEntity.ok(new SignalResponse(signalId, status, "Sinyal başarıyla işlendi ve Binance emri gerçekleşti."));
+            }
+            if ("NEW".equalsIgnoreCase(status)) {
+                return ResponseEntity.ok(new SignalResponse(signalId, status, "Emir borsaya iletildi, eşleşme bekleniyor"));
+            }
+            if ("PARTIALLY_FILLED".equalsIgnoreCase(status)) {
+                return ResponseEntity.ok(new SignalResponse(signalId, status, "Emir kısmen gerçekleşti"));
+            }
+            return ResponseEntity.ok(new SignalResponse(signalId, status, "Emir durumu: " + status));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(new SignalResponse(signalId, "ERROR", e.getMessage()));
