@@ -44,3 +44,10 @@ build/
 ### Log dosyaları ###
 *.log
 logs/
+
+
+target/
+.idea/
+.vscode/
+*.log
+application.properties
