@@ -1,0 +1,9 @@
+spring.datasource.url=jdbc:h2:file:./data/algobotdb
+spring.datasource.driverClassName=org.h2.Driver
+spring.datasource.username=sa
+spring.datasource.password=
+spring.jpa.database-platform=org.hibernate.dialect.H2Dialect
+spring.jpa.hibernate.ddl-auto=update
+binance.api.key=YOUR_BINANCE_API_KEY
+binance.api.secret=YOUR_BINANCE_SECRET_KEY
+webhook.secret=YOUR_WEBHOOK_SECRET

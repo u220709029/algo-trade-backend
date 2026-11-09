@@ -10,7 +10,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -22,18 +21,11 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class SignalProcessingService {
 
-    private static final String TESTNET_BASE_URL = "https://testnet.binance.vision";
-
-    @Value("${binance.api.key}")
-    private String apiKey;
-
-    @Value("${binance.api.secret}")
-    private String secretKey;
-
+    private final SpotClientImpl binanceClient;
     private final SignalRepository signalRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public void processSignal(TradingSignalRequest signal) {
+    public String processSignal(TradingSignalRequest signal) {
         
         if (signal.signalId() == null) {
             throw new IllegalArgumentException("VALIDATION_ERROR: signalId eksik!");
@@ -65,12 +57,10 @@ public class SignalProcessingService {
         }
 
         // --- 3. BORSAYA İLETİM ---
-        sendMarketOrder(signal, signalId);
+        return sendMarketOrder(signal, signalId);
     }
 
-    private void sendMarketOrder(TradingSignalRequest signal, String signalId) {
-        SpotClientImpl client = new SpotClientImpl(apiKey, secretKey, TESTNET_BASE_URL);
-
+    private String sendMarketOrder(TradingSignalRequest signal, String signalId) {
         try {
             LinkedHashMap<String, Object> parameters = new LinkedHashMap<>();
             parameters.put("symbol", signal.symbol());
@@ -80,24 +70,25 @@ public class SignalProcessingService {
             parameters.put("newClientOrderId", signalId);
             parameters.put("recvWindow", 60000L);
 
-            String response = client.createTrade().newOrder(parameters);
+            String response = binanceClient.createTrade().newOrder(parameters);
             
             JsonNode root = objectMapper.readTree(response);
             String status = root.has("status") ? root.path("status").asText() : "UNKNOWN";
             
             log.info("✅ Binance Emri Başarıyla Gerçekleşti! Durum: {}", status);
             updateRecordStatus(signalId, status);
+            return status;
 
         } catch (BinanceClientException e) {
             if (e.getErrorCode() == -1007) {
-                checkOrderStatus(client, signal, signalId);
+                return checkOrderStatus(signal, signalId);
             } else {
                 updateRecordStatus(signalId, "REJECTED_" + e.getErrorCode());
                 throw new RuntimeException("BINANCE_REJECTED: " + e.getMessage());
             }
 
         } catch (BinanceConnectorException e) {
-            checkOrderStatus(client, signal, signalId);
+            return checkOrderStatus(signal, signalId);
             
         } catch (Exception e) {
             updateRecordStatus(signalId, "SYSTEM_ERROR");
@@ -105,7 +96,7 @@ public class SignalProcessingService {
         }
     }
 
-    private void checkOrderStatus(SpotClientImpl client, TradingSignalRequest signal, String signalId) {
+    private String checkOrderStatus(TradingSignalRequest signal, String signalId) {
         log.warn("🚨 DURUM BELİRSİZ (-1007 veya Ağ Hatası). Binance'e '{}' ID'si ile akıllı sorgu atılıyor...", signalId);
         
         try {
@@ -114,13 +105,14 @@ public class SignalProcessingService {
             queryParams.put("origClientOrderId", signalId);
             queryParams.put("recvWindow", 60000L);
             
-            String response = client.createTrade().getOrder(queryParams);
+            String response = binanceClient.createTrade().getOrder(queryParams);
             
             JsonNode root = objectMapper.readTree(response);
-            String status = root.path("status").asText();
+            String status = root.has("status") ? root.path("status").asText() : "UNKNOWN";
             
             log.info("✅ SORGULAMA BAŞARILI: Emir Binance'e ulaşmış. Gerçek Durumu: {}", status);
             updateRecordStatus(signalId, status);
+            return status;
             
         } catch (BinanceClientException queryEx) {
             int errCode = queryEx.getErrorCode();

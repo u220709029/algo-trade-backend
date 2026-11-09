@@ -36,10 +36,16 @@ public class WebhookController {
             log.debug("Webhook isteği güvenle karşılandı: Symbol={}, Action={}", request.symbol(), request.action());
 
             // Service katmanını çağırıyoruz. Eğer Binance reddederse buradan hata fırlayacak.
-            signalProcessingService.processSignal(request);
+            String status = signalProcessingService.processSignal(request);
+
+            if ("UNKNOWN".equalsIgnoreCase(status)) {
+                log.warn("Emir durumu belirsiz (UNKNOWN), 202 Accepted dönülüyor. SignalId={}", request.signalId());
+                return ResponseEntity.status(HttpStatus.ACCEPTED)
+                        .body("Emir Binance'e iletildi ancak durumu henüz belirsiz (UNKNOWN).");
+            }
 
             // Hata fırlamazsa alt satıra geçer ve başarılı cevabı döner
-            return ResponseEntity.ok("Sinyal başarıyla işlendi ve Binance emri gerçekleşti.");
+            return ResponseEntity.ok("Sinyal başarıyla işlendi ve Binance emri gerçekleşti. Durum: " + status);
 
         } catch (Exception e) {
             String errorMsg = e.getMessage();
