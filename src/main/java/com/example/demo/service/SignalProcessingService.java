@@ -3,6 +3,7 @@ package com.example.demo.service;
 import com.binance.connector.client.exceptions.BinanceClientException;
 import com.binance.connector.client.exceptions.BinanceConnectorException;
 import com.binance.connector.client.impl.SpotClientImpl;
+import com.example.demo.dto.SignalResponse;
 import com.example.demo.dto.TradingSignalRequest;
 import com.example.demo.entity.SignalRecord;
 import com.example.demo.repository.SignalRepository;
@@ -137,6 +138,36 @@ public class SignalProcessingService {
             log.error("🚨 KRİTİK: Sorgu da yapılamadı, internet tamamen yok!");
             updateRecordStatus(signalId, "UNKNOWN");
             throw new RuntimeException("TIMEOUT_UNKNOWN_STATE: Bağlantı koptu, durum sorgulanamadı.");
+        }
+    }
+
+    public SignalResponse requeryOrderStatus(String signalId) {
+        SignalRecord record = signalRepository.findById(signalId)
+                .orElseThrow(() -> new IllegalArgumentException("NOT_FOUND: '" + signalId + "' ID'li sinyal kaydı bulunamadı!"));
+
+        if (!"UNKNOWN".equalsIgnoreCase(record.getOrderStatus())) {
+            return new SignalResponse(signalId, record.getOrderStatus(), "Emir durumu zaten biliniyor: " + record.getOrderStatus());
+        }
+
+        try {
+            LinkedHashMap<String, Object> queryParams = new LinkedHashMap<>();
+            queryParams.put("symbol", record.getSymbol());
+            queryParams.put("origClientOrderId", signalId);
+            queryParams.put("recvWindow", 60000L);
+
+            String response = binanceClient.createTrade().getOrder(queryParams);
+            JsonNode root = objectMapper.readTree(response);
+            String newStatus = root.has("status") ? root.path("status").asText() : "UNKNOWN";
+
+            record.setOrderStatus(newStatus);
+            signalRepository.save(record);
+
+            log.info("✅ YENİDEN SORGULAMA BAŞARILI: '{}' ID'li emrin güncel durumu: {}", signalId, newStatus);
+            return new SignalResponse(signalId, newStatus, "Emir durumu Binance üzerinden güncellendi.");
+
+        } catch (Exception e) {
+            log.error("🚨 YENİDEN SORGULAMA HATASI ('{}'): {}", signalId, e.getMessage());
+            throw new RuntimeException("REQUERY_ERROR: Binance üzerinden durum sorgulanamadı: " + e.getMessage());
         }
     }
 

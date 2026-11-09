@@ -1,5 +1,6 @@
 package com.example.demo.controller;
 
+import com.example.demo.dto.SignalResponse;
 import com.example.demo.dto.TradingSignalRequest;
 import com.example.demo.service.SignalProcessingService;
 import lombok.RequiredArgsConstructor;
@@ -21,50 +22,78 @@ public class WebhookController {
     private String webhookSecret;
 
     @PostMapping(value = "/api/webhook", consumes = "application/json", produces = "application/json")
-    public ResponseEntity<String> receiveSignal(
+    public ResponseEntity<SignalResponse> receiveSignal(
             @RequestHeader(value = "X-Webhook-Secret", required = false) String incomingSecret,
             @RequestBody TradingSignalRequest request) {
+
+        String signalId = request != null ? request.signalId() : null;
 
         // 1. GÜVENLİK KONTROLÜ
         if (incomingSecret == null || !webhookSecret.equals(incomingSecret)) {
             log.warn("KORSAN SALDIRI ENGELLENDİ! Yanlış veya eksik şifre denemesi.");
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Hata: Yetkisiz Erişim!");
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new SignalResponse(signalId, "ERROR", "Hata: Yetkisiz Erişim!"));
         }
 
-        // 2. İŞLEM VE HATA YAKALAMA (YENİ EKLENEN KISIM)
+        // 2. İŞLEM VE HATA YAKALAMA
         try {
             log.debug("Webhook isteği güvenle karşılandı: Symbol={}, Action={}", request.symbol(), request.action());
 
-            // Service katmanını çağırıyoruz. Eğer Binance reddederse buradan hata fırlayacak.
             String status = signalProcessingService.processSignal(request);
 
-            if ("UNKNOWN".equalsIgnoreCase(status)) {
-                log.warn("Emir durumu belirsiz (UNKNOWN), 202 Accepted dönülüyor. SignalId={}", request.signalId());
-                return ResponseEntity.status(HttpStatus.ACCEPTED)
-                        .body("Emir Binance'e iletildi ancak durumu henüz belirsiz (UNKNOWN).");
+            if ("FILLED".equalsIgnoreCase(status) || "NEW".equalsIgnoreCase(status) || "PARTIALLY_FILLED".equalsIgnoreCase(status)) {
+                return ResponseEntity.ok(new SignalResponse(signalId, status, "Sinyal başarıyla işlendi ve Binance emri gerçekleşti."));
             }
 
-            // Hata fırlamazsa alt satıra geçer ve başarılı cevabı döner
-            return ResponseEntity.ok("Sinyal başarıyla işlendi ve Binance emri gerçekleşti. Durum: " + status);
+            if ("UNKNOWN".equalsIgnoreCase(status)) {
+                log.warn("Emir durumu belirsiz (UNKNOWN), 202 Accepted dönülüyor. SignalId={}", signalId);
+                return ResponseEntity.status(HttpStatus.ACCEPTED)
+                        .body(new SignalResponse(signalId, "UNKNOWN", "Emir Binance'e iletildi ancak durumu henüz belirsiz (UNKNOWN)."));
+            }
 
+            return ResponseEntity.ok(new SignalResponse(signalId, status, "İşlem tamamlandı. Durum: " + status));
+
+        } catch (IllegalArgumentException e) {
+            log.error("Doğrulama hatası: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(new SignalResponse(signalId, "ERROR", e.getMessage()));
         } catch (Exception e) {
             String errorMsg = e.getMessage();
-
-            // Eğer hata IDEMPOTENCY (Çift İstek) ise 409 Conflict dön
-            if (errorMsg != null && errorMsg.contains("IDEMPOTENCY_ERROR")) {
-                log.warn("Tekrarlanan istek reddedildi: {}", errorMsg);
-                return ResponseEntity.status(HttpStatus.CONFLICT).body(errorMsg);
-            }
-
-            // Eğer hata ZAMAN AŞIMI ise 504 Gateway Timeout dön
-            if (errorMsg != null && errorMsg.contains("TIMEOUT_UNKNOWN_STATE")) {
-                log.error("KRİTİK UYARI: İşlem durumu belirsiz! {}", errorMsg);
-                return ResponseEntity.status(HttpStatus.GATEWAY_TIMEOUT).body("Durum Belirsiz: " + errorMsg);
-            }
-
-            // Diğer normal Binance redleri için 400 Bad Request dön
             log.error("İşlem başarısız oldu: {}", errorMsg);
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("İşlem Başarısız: " + errorMsg);
+
+            if (errorMsg != null && (errorMsg.contains("VALIDATION_ERROR") || errorMsg.contains("BINANCE_REJECTED") || errorMsg.contains("IDEMPOTENCY_ERROR"))) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                        .body(new SignalResponse(signalId, "ERROR", errorMsg));
+            }
+
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new SignalResponse(signalId, "ERROR", errorMsg));
+        }
+    }
+
+    @GetMapping(value = "/status/{signalId}", produces = "application/json")
+    public ResponseEntity<SignalResponse> requeryStatus(
+            @RequestHeader(value = "X-Webhook-Secret", required = false) String incomingSecret,
+            @PathVariable String signalId) {
+
+        if (incomingSecret == null || !webhookSecret.equals(incomingSecret)) {
+            log.warn("KORSAN SALDIRI ENGELLENDİ! Yanlış veya eksik şifre denemesi.");
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new SignalResponse(signalId, "ERROR", "Hata: Yetkisiz Erişim!"));
+        }
+
+        try {
+            SignalResponse response = signalProcessingService.requeryOrderStatus(signalId);
+            if ("UNKNOWN".equalsIgnoreCase(response.status())) {
+                return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
+            }
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(new SignalResponse(signalId, "ERROR", e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new SignalResponse(signalId, "ERROR", e.getMessage()));
         }
     }
 }
