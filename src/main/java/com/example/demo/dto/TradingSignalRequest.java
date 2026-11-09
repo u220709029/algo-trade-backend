@@ -15,6 +15,7 @@ public record TradingSignalRequest(
     String symbol,
     String action,
     BigDecimal price,
-    Long timestamp
+    Long timestamp,
+    BigDecimal quantity
 ) {
 }

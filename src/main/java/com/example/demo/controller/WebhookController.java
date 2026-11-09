@@ -4,38 +4,47 @@ import com.example.demo.dto.TradingSignalRequest;
 import com.example.demo.service.SignalProcessingService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
-/**
- * TradingView Webhook sinyallerini karşılayan REST API Controller katmanı.
- * Clean Architecture prensipleri gereği bu katmanda hiçbir iş mantığı (business logic) bulunmaz;
- * yalnızca gelen isteği doğrular ve ilgili servis katmanına delege eder.
- */
-@Slf4j
 @RestController
-@RequestMapping("/api/webhook")
 @RequiredArgsConstructor
+@Slf4j
 public class WebhookController {
 
     private final SignalProcessingService signalProcessingService;
 
-    /**
-     * TradingView veya diğer dış kaynaklardan gelen POST sinyal isteklerini karşılar.
-     *
-     * @param request JSON gövdesinden deserialize edilen TradingSignalRequest record nesnesi
-     * @return 200 OK yanıtı
-     */
-    @PostMapping
-    public ResponseEntity<String> receiveSignal(@RequestBody TradingSignalRequest request) {
-        log.debug("Webhook isteği karşılandı: Symbol={}, Action={}", request.symbol(), request.action());
+    // 1. Şifreyi properties dosyasından kasaya çekiyoruz
+    @Value("${webhook.secret}")
+    private String webhookSecret;
 
-        // İş mantığı tamamen servis katmanına devrediliyor
-        signalProcessingService.processSignal(request);
+    @PostMapping(value = "/api/webhook", consumes = "application/json", produces = "application/json")
+    public ResponseEntity<String> receiveSignal(
+            @RequestHeader(value = "X-Webhook-Secret", required = false) String incomingSecret,
+            @RequestBody TradingSignalRequest request) {
 
-        return ResponseEntity.ok("Sinyal başarıyla alındı ve işleme kuyruğuna iletildi.");
+        // 1. GÜVENLİK KONTROLÜ
+        if (incomingSecret == null || !webhookSecret.equals(incomingSecret)) {
+            log.warn("KORSAN SALDIRI ENGELLENDİ! Yanlış veya eksik şifre denemesi.");
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Hata: Yetkisiz Erişim!");
+        }
+
+        // 2. İŞLEM VE HATA YAKALAMA (YENİ EKLENEN KISIM)
+        try {
+            log.debug("Webhook isteği güvenle karşılandı: Symbol={}, Action={}", request.symbol(), request.action());
+
+            // Service katmanını çağırıyoruz. Eğer Binance reddederse buradan hata fırlayacak.
+            signalProcessingService.processSignal(request);
+
+            // Hata fırlamazsa alt satıra geçer ve başarılı cevabı döner
+            return ResponseEntity.ok("Sinyal başarıyla işlendi ve Binance emri gerçekleşti.");
+
+        } catch (Exception e) {
+            // Service'den fırlatılan hatayı burada yakalayıp müşteriye (400 Bad Request) olarak dönüyoruz
+            log.error("İşlem başarısız oldu, müşteriye hata dönülüyor: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("İşlem Başarısız: " + e.getMessage());
+        }
     }
 }
