@@ -57,14 +57,10 @@ public class SignalProcessingService {
 
         // --- 2. KALICI VERİTABANINDA ÇİFT İŞLEM KORUMASI (IDEMPOTENCY) ---
         String signalId = signal.signalId();
-        
-        SignalRecord record = new SignalRecord(signalId, signal.symbol(), signal.action(), "UNKNOWN", System.currentTimeMillis());
         try {
-            // saveAndFlush anında diske yazar. Eğer aynı ID ile eşzamanlı (concurrent) bir istek 
-            // gelirse, veritabanı Primary Key kısıtlamasından dolayı hata fırlatır.
-            signalRepository.saveAndFlush(record);
+            signalRepository.insertSignalStrict(signalId, signal.symbol(), signal.action(), "UNKNOWN", System.currentTimeMillis());
         } catch (org.springframework.dao.DataIntegrityViolationException e) {
-            log.warn("🚨 EŞZAMANLI ÇİFT İŞLEM ENGELLENDİ (Race Condition)! '{}' ID'li sinyal veritabanına yazılırken çakışma yaşandı.", signalId);
+            log.warn("🚨 ÇİFT İŞLEM ENGELLENDİ! '{}' ID'li sinyal veritabanına yazılırken çakışma yaşandı.", signalId);
             throw new RuntimeException("IDEMPOTENCY_ERROR: Bu sinyal zaten işlendi!");
         }
 
@@ -87,7 +83,7 @@ public class SignalProcessingService {
             String response = client.createTrade().newOrder(parameters);
             
             JsonNode root = objectMapper.readTree(response);
-            String status = root.path("status").asText("FILLED");
+            String status = root.has("status") ? root.path("status").asText() : "UNKNOWN";
             
             log.info("✅ Binance Emri Başarıyla Gerçekleşti! Durum: {}", status);
             updateRecordStatus(signalId, status);
@@ -130,9 +126,9 @@ public class SignalProcessingService {
             int errCode = queryEx.getErrorCode();
             
             if (errCode == -2013) {
-                log.error("❌ SORGULAMA (-2013): Emir borsaya HİÇ ULAŞMAMIŞ.");
-                updateRecordStatus(signalId, "FAILED_NEVER_REACHED");
-                throw new RuntimeException("ORDER_NOT_FOUND: İnternet koptu ve emir borsaya hiç ulaşmadı.");
+                log.error("❌ SORGULAMA (-2013): Emir borsaya HİÇ ULAŞMAMIŞ veya gecikmiş.");
+                updateRecordStatus(signalId, "UNKNOWN");
+                throw new RuntimeException("ORDER_NOT_FOUND: Emir bulunamadı, durum BELİRSİZ.");
                 
             } else if (errCode == -2015) {
                 log.error("🚨 KRİTİK (-2015): Sorgulama için yetki reddedildi. Emrin durumu HÂLÂ BELİRSİZ (UNKNOWN)!");
