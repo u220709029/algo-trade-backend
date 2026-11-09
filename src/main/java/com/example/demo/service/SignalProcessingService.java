@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -37,6 +38,23 @@ public class SignalProcessingService {
      * @param signal TradingView tarafından gönderilen sinyal verisi
      */
     public void processSignal(TradingSignalRequest signal) {
+
+        if (signal.quantity().compareTo(BigDecimal.ZERO) <= 0 || signal.quantity().compareTo(new BigDecimal("10")) > 0) {
+            log.error("🚨 GÜVENLİK İHLALİ: Geçersiz miktar algılandı. Miktar: {}", signal.quantity());
+            throw new IllegalArgumentException("VALIDATION_ERROR: Miktar 0'dan büyük ve 10'dan küçük olmalıdır.");
+        }
+
+        // B) Yön Kontrolü: Sadece BUY veya SELL komutlarına izin ver
+        if (!"BUY".equalsIgnoreCase(signal.action()) && !"SELL".equalsIgnoreCase(signal.action())) {
+            log.error("🚨 GÜVENLİK İHLALİ: Geçersiz işlem yönü. Yön: {}", signal.action());
+            throw new IllegalArgumentException("VALIDATION_ERROR: İşlem yönü sadece BUY veya SELL olabilir.");
+        }
+
+        // C) Parite Kontrolü: Güvenlik için sadece USDT (Tether) paritelerinde işlem yapılmasına izin ver
+        if (signal.symbol() == null || !signal.symbol().toUpperCase().endsWith("USDT")) {
+            log.error("🚨 GÜVENLİK İHLALİ: Desteklenmeyen parite. Parite: {}", signal.symbol());
+            throw new IllegalArgumentException("VALIDATION_ERROR: Sadece USDT pariteleri desteklenmektedir.");
+        }
 
         // 1. EĞER TRADINGVIEW ID GÖNDERMEYİ UNUTURSA, BİZ RASTGELE ÜRETELİM
         String signalId = signal.signalId();
