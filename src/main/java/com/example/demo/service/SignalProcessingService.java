@@ -39,15 +39,15 @@ public class SignalProcessingService {
      */
     public void processSignal(TradingSignalRequest signal) {
 
-        if (signal.quantity().compareTo(BigDecimal.ZERO) <= 0 || signal.quantity().compareTo(new BigDecimal("10")) > 0) {
-            log.error("🚨 GÜVENLİK İHLALİ: Geçersiz miktar algılandı. Miktar: {}", signal.quantity());
-            throw new IllegalArgumentException("VALIDATION_ERROR: Miktar 0'dan büyük ve 10'dan küçük olmalıdır.");
+        if (signal.signalId() == null || signal.signalId().trim().isEmpty()) {
+            log.error("🚨 GÜVENLİK İHLALİ: Sinyal Kimliği (signalId) eksik!");
+            throw new IllegalArgumentException("VALIDATION_ERROR: signalId zorunludur. Kimliksiz işlem kabul edilemez.");
         }
+        String signalId = signal.signalId();
 
-        // B) Yön Kontrolü: Sadece BUY veya SELL komutlarına izin ver
-        if (!"BUY".equalsIgnoreCase(signal.action()) && !"SELL".equalsIgnoreCase(signal.action())) {
-            log.error("🚨 GÜVENLİK İHLALİ: Geçersiz işlem yönü. Yön: {}", signal.action());
-            throw new IllegalArgumentException("VALIDATION_ERROR: İşlem yönü sadece BUY veya SELL olabilir.");
+        // B) Miktar Kontrolü
+        if (signal.quantity().compareTo(BigDecimal.ZERO) <= 0 || signal.quantity().compareTo(new BigDecimal("10")) > 0) {
+            throw new IllegalArgumentException("VALIDATION_ERROR: Miktar 0'dan büyük ve 10'dan küçük olmalıdır.");
         }
 
         // C) Parite Kontrolü: Güvenlik için sadece USDT (Tether) paritelerinde işlem yapılmasına izin ver
@@ -56,11 +56,11 @@ public class SignalProcessingService {
             throw new IllegalArgumentException("VALIDATION_ERROR: Sadece USDT pariteleri desteklenmektedir.");
         }
 
-        // 1. EĞER TRADINGVIEW ID GÖNDERMEYİ UNUTURSA, BİZ RASTGELE ÜRETELİM
-        String signalId = signal.signalId();
-        if (signalId == null || signalId.isEmpty()) {
-            signalId = UUID.randomUUID().toString();
-        }
+//        // 1. EĞER TRADINGVIEW ID GÖNDERMEYİ UNUTURSA, BİZ RASTGELE ÜRETELİM
+//        String signalId = signal.signalId();
+//        if (signalId == null || signalId.isEmpty()) {
+//            signalId = UUID.randomUUID().toString();
+//        }
 
         long currentTime = System.currentTimeMillis();
 
@@ -82,30 +82,50 @@ public class SignalProcessingService {
     }
 
     private void sendMarketOrder(TradingSignalRequest signal, String signalId) {
-        try {
-            SpotClientImpl client = new SpotClientImpl(apiKey, secretKey, TESTNET_BASE_URL);
 
+        // DÜZELTME: client nesnesi try bloğunun DIŞINA taşındı. Artık catch bloğu da bunu görebilir.
+        SpotClientImpl client = new SpotClientImpl(apiKey, secretKey, TESTNET_BASE_URL);
+
+        try {
             LinkedHashMap<String, Object> parameters = new LinkedHashMap<>();
             parameters.put("symbol", signal.symbol());
             parameters.put("side", signal.action());
             parameters.put("type", "MARKET");
             parameters.put("quantity", signal.quantity());
-
-            // 3. SCHRÖDİNGER ÇÖZÜMÜ: Binance'e kendi fiş numaramızı (ID) veriyoruz
             parameters.put("newClientOrderId", signalId);
+            parameters.put("recvWindow", 60000L);
 
             String response = client.createTrade().newOrder(parameters);
             log.info("Binance Emri Başarıyla Gerçekleşti! Dönen JSON:\n{}", response);
 
         } catch (BinanceClientException e) {
-            // Binance kurallarına aykırı bir şey yaptık (Bakiye yok, limit altı vs.)
             throw new RuntimeException("BINANCE_REJECTED: " + e.getMessage());
 
         } catch (BinanceConnectorException e) {
-            // İNTERNET KOPTU! Binance emri aldı mı almadı mı bilmiyoruz!
-            throw new RuntimeException("TIMEOUT_UNKNOWN_STATE: İnternet koptu, emrin durumu belirsiz.");
+            log.warn("🚨 İNTERNET KOPTU VEYA ZAMAN AŞIMI! Emrin durumu belirsiz. Binance'e '{}' ID'si ile soruluyor...", signalId);
+
+            try {
+                LinkedHashMap<String, Object> queryParams = new LinkedHashMap<>();
+                queryParams.put("symbol", signal.symbol());
+                queryParams.put("origClientOrderId", signalId);
+                queryParams.put("recvWindow", 60000L);
+
+                // Artık client değişkeni burada hata vermeyecek
+                String orderStatusResponse = client.createTrade().getOrder(queryParams);
+
+                log.info("✅ KORKULACAK BİR ŞEY YOK! Emir Binance'e başarıyla ulaşmış. Durumu:\n{}", orderStatusResponse);
+
+            } catch (BinanceClientException queryEx) {
+                log.error("❌ SORGULAMA SONUCU: Emir Binance'e hiç ulaşmamış. Hata: {}", queryEx.getMessage());
+                throw new RuntimeException("ORDER_NOT_FOUND: İnternet koptu ve emir borsaya hiç ulaşmadı.");
+
+            } catch (Exception queryEx) {
+                log.error("🚨 KRİTİK: Sorgu da başarısız oldu! Bağlantı tamamen gitmiş: {}", queryEx.getMessage());
+                throw new RuntimeException("TIMEOUT_UNKNOWN_STATE: Bağlantı tamamen koptu, durum sorgulanamadı.");
+            }
 
         } catch (Exception e) {
+            log.error("Emir gönderimi sırasında beklenmeyen bir hata meydana geldi: {}", e.getMessage(), e);
             throw new RuntimeException("SYSTEM_ERROR: " + e.getMessage());
         }
     }
