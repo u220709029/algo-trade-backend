@@ -145,8 +145,13 @@ public class SignalProcessingService {
         SignalRecord record = signalRepository.findById(signalId)
                 .orElseThrow(() -> new IllegalArgumentException("NOT_FOUND: '" + signalId + "' ID'li sinyal kaydı bulunamadı!"));
 
-        if (!"UNKNOWN".equalsIgnoreCase(record.getOrderStatus())) {
-            return new SignalResponse(signalId, record.getOrderStatus(), "Emir durumu zaten biliniyor: " + record.getOrderStatus());
+        String currentStatus = record.getOrderStatus();
+        boolean isPendingOrUnknown = "UNKNOWN".equalsIgnoreCase(currentStatus)
+                || "NEW".equalsIgnoreCase(currentStatus)
+                || "PARTIALLY_FILLED".equalsIgnoreCase(currentStatus);
+
+        if (!isPendingOrUnknown) {
+            return new SignalResponse(signalId, currentStatus, buildStatusMessage(currentStatus));
         }
 
         try {
@@ -163,12 +168,25 @@ public class SignalProcessingService {
             signalRepository.save(record);
 
             log.info("✅ YENİDEN SORGULAMA BAŞARILI: '{}' ID'li emrin güncel durumu: {}", signalId, newStatus);
-            return new SignalResponse(signalId, newStatus, "Emir durumu Binance üzerinden güncellendi.");
+            return new SignalResponse(signalId, newStatus, buildStatusMessage(newStatus));
 
         } catch (Exception e) {
             log.error("🚨 YENİDEN SORGULAMA HATASI ('{}'): {}", signalId, e.getMessage());
             throw new RuntimeException("REQUERY_ERROR: Binance üzerinden durum sorgulanamadı: " + e.getMessage());
         }
+    }
+
+    private String buildStatusMessage(String status) {
+        if ("FILLED".equalsIgnoreCase(status)) {
+            return "Sinyal başarıyla işlendi ve Binance emri gerçekleşti.";
+        } else if ("NEW".equalsIgnoreCase(status)) {
+            return "Emir borsaya iletildi, eşleşme bekleniyor";
+        } else if ("PARTIALLY_FILLED".equalsIgnoreCase(status)) {
+            return "Emir kısmen gerçekleşti";
+        } else if ("UNKNOWN".equalsIgnoreCase(status)) {
+            return "Emir Binance'e iletildi ancak durumu henüz belirsiz (UNKNOWN).";
+        }
+        return "Emir nihai durumda: " + status;
     }
 
     private void updateRecordStatus(String signalId, String newStatus) {

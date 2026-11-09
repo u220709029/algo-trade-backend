@@ -41,8 +41,16 @@ public class WebhookController {
 
             String status = signalProcessingService.processSignal(request);
 
-            if ("FILLED".equalsIgnoreCase(status) || "NEW".equalsIgnoreCase(status) || "PARTIALLY_FILLED".equalsIgnoreCase(status)) {
+            if ("FILLED".equalsIgnoreCase(status)) {
                 return ResponseEntity.ok(new SignalResponse(signalId, status, "Sinyal başarıyla işlendi ve Binance emri gerçekleşti."));
+            }
+
+            if ("NEW".equalsIgnoreCase(status)) {
+                return ResponseEntity.ok(new SignalResponse(signalId, status, "Emir borsaya iletildi, eşleşme bekleniyor"));
+            }
+
+            if ("PARTIALLY_FILLED".equalsIgnoreCase(status)) {
+                return ResponseEntity.ok(new SignalResponse(signalId, status, "Emir kısmen gerçekleşti"));
             }
 
             if ("UNKNOWN".equalsIgnoreCase(status)) {
@@ -53,21 +61,26 @@ public class WebhookController {
 
             return ResponseEntity.ok(new SignalResponse(signalId, status, "İşlem tamamlandı. Durum: " + status));
 
-        } catch (IllegalArgumentException e) {
-            log.error("Doğrulama hatası: {}", e.getMessage());
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                    .body(new SignalResponse(signalId, "ERROR", e.getMessage()));
         } catch (Exception e) {
             String errorMsg = e.getMessage();
-            log.error("İşlem başarısız oldu: {}", errorMsg);
 
-            if (errorMsg != null && (errorMsg.contains("VALIDATION_ERROR") || errorMsg.contains("BINANCE_REJECTED") || errorMsg.contains("IDEMPOTENCY_ERROR"))) {
+            if (errorMsg != null && errorMsg.contains("IDEMPOTENCY_ERROR")) {
+                log.warn("Tekrarlanan istek reddedildi: {}", errorMsg);
+                return ResponseEntity.status(HttpStatus.CONFLICT)
+                        .body(new SignalResponse(signalId, "ERROR", errorMsg));
+            } else if (errorMsg != null && (errorMsg.contains("ORDER_NOT_FOUND") || errorMsg.contains("BELİRSİZ") || errorMsg.contains("TIMEOUT_UNKNOWN_STATE") || errorMsg.contains("belirsiz"))) {
+                log.warn("Emir durumu belirsiz (202 Accepted): {}", errorMsg);
+                return ResponseEntity.status(HttpStatus.ACCEPTED)
+                        .body(new SignalResponse(signalId, "UNKNOWN", errorMsg));
+            } else if (e instanceof IllegalArgumentException || (errorMsg != null && (errorMsg.contains("VALIDATION_ERROR") || errorMsg.contains("BINANCE_REJECTED")))) {
+                log.error("İstek hatası: {}", errorMsg);
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                         .body(new SignalResponse(signalId, "ERROR", errorMsg));
+            } else {
+                log.error("Beklenmedik sistem hatası: {}", errorMsg);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(new SignalResponse(signalId, "ERROR", errorMsg));
             }
-
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new SignalResponse(signalId, "ERROR", errorMsg));
         }
     }
 
